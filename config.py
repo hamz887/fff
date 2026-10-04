@@ -119,6 +119,12 @@ class Config:
     fl_ema: float = 0.9               # EMA decay of the server model (0 = off)
     # ---- decision rule and deployment
     decision_threshold: float = 0.5   # standard rule for every model: attack if sigmoid score >= 0.5
+    # Recall-oriented threshold, reported next to the 0.5 rule: "far" lowers the threshold to the value with the highest
+    # detection rate whose false-alarm rate on out-of-fold development scores stays <= target_far (never above
+    # decision_threshold, never chosen on the test set); "fixed" keeps decision_threshold only. Post-hoc: it only
+    # re-reads stored scores, so changing it does not invalidate the cache of a run being resumed.
+    threshold_mode: str = "far"       # "far" | "fixed"
+    target_far: float = 0.001         # maximum false-alarm rate (FPR) accepted when lowering the threshold
     # "auto": Fed-KAN-AE is deployed when it is non-inferior to the best centralized model on mean cross-validation MCC
     # (the centralized model exceeds it by at most deploy_margin_mcc), otherwise the best centralized model is deployed;
     # or an explicit key: mlp / kan / kan_ae / fl_kan_ae. The test set never influences this decision.
@@ -149,13 +155,15 @@ class Config:
         allowed = {"deploy_model": ("auto", "mlp", "kan", "kan_ae", "fl_kan_ae"),
                    "proposed_setting": ("fs", "all", "auto"), "fl_local_opt": ("sgd", "adamw"),
                    "fl_server_opt": ("avgm", "avg"), "fl_lr_schedule": ("cos", "const"),
-                   "text_encoding": ("ordinal", "onehot"),
+                   "text_encoding": ("ordinal", "onehot"), "threshold_mode": ("far", "fixed"),
                    "ui": ("auto", "rich", "ansi", "plain")}
         for k, ok in allowed.items():
             if getattr(self, k) not in ok:
                 raise ValueError(f"{k}={getattr(self, k)!r} is not one of {ok}")
         if not 0 < self.val_frac < 0.5:
             raise ValueError("val_frac must be in (0, 0.5)")
+        if not 0 <= self.target_far < 1:
+            raise ValueError("target_far must be in [0, 1)")
 
     def fl_protocol(self):
         """The federated protocol actually configured (console header and model card use this single description)."""
@@ -199,6 +207,10 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+# Settings applied after training to stored scores only; the cache snapshot ignores them (see reporting.Cache).
+POST_HOC_SETTINGS = ("threshold_mode", "target_far")
 
 
 # ---- model registry and display names

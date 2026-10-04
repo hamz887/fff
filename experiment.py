@@ -10,7 +10,10 @@ STAGE 2  CrossValidator: stratified 5-fold CV on the development set, executed p
          scores), so the CV metrics are unbiased estimates.
 STAGE 3  FinalEvaluator: every model retrained on the full development set, evaluated ONCE on the held-out test set.
          AttackTypeClassifier: second-stage softmax over attack types (hierarchical detection).
-All binary decisions use the standard rule score >= 0.5 (config.decision_threshold).
+All binary decisions use the standard rule score >= 0.5 (config.decision_threshold). With threshold_mode "far" every
+result is also reported at a recall-oriented threshold (evaluate.select_threshold, false-alarm budget target_far)
+chosen on out-of-fold development scores only: in CV, fold k uses the OOF scores of the other folds (cross-fitting);
+the final models use the OOF scores of the whole development set. The test set never influences a threshold.
 """
 import json
 import os
@@ -22,7 +25,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from .config import (CENTRAL_MODELS, COMPARISONS, MODEL_NAMES, ORDER, PROPOSED, SET_NAMES, arch_of, long_name)
 from .data_loader import FeatureScaler, FoldPreprocessor, holdout_split, partition_table, stratification_key
-from .evaluate import binary_metrics, holm, mcnemar, paired_tests, per_attack_dr
+from .evaluate import binary_metrics, holm, mcnemar, paired_tests, per_attack_dr, select_threshold
 from .feature_selection import BorutaXGB, federated_feature_voting
 from .models import build_model, count_params
 from .reporting import fmt_int, write_json
@@ -37,6 +40,19 @@ def metric_table(R, rows):
     R.table(["Features", "Model"] + [h for _, h in METRIC_COLS],
             [(r["setting"], MODEL_NAMES.get(r["model"], r["model"])) + tuple(f"{r[k]:.4f}" for k, _ in METRIC_COLS)
              for r in rows], widths=[10, 26] + [8] * len(METRIC_COLS))
+
+
+def threshold_table(R, title, base, tuned, models):
+    """Side-by-side means of the 0.5 rule (base) and the recall-oriented threshold (tuned) per model."""
+    R.section(title)
+    out = []
+    for m in [x for x in ORDER if x in models and x in set(tuned.model)]:
+        b, t = base[base.model == m], tuned[tuned.model == m]
+        out.append((MODEL_NAMES[m], f"{t.threshold.mean():.4f}", f"{b.recall.mean():.4f}", f"{t.recall.mean():.4f}",
+                    f"{b.far.mean():.5f}", f"{t.far.mean():.5f}", f"{b.f1.mean():.4f}", f"{t.f1.mean():.4f}",
+                    f"{b.mcc.mean():.4f}", f"{t.mcc.mean():.4f}", fmt_int(round(b.fn.mean())), fmt_int(round(t.fn.mean()))))
+    R.table(["Model", "Thr", "Rec 0.5", "Rec thr", "FAR 0.5", "FAR thr", "F1 0.5", "F1 thr", "MCC 0.5", "MCC thr",
+             "FN 0.5", "FN thr"], out, widths=[26, 8, 8, 8, 9, 9, 8, 8, 8, 8, 8, 8])
 
 
 def _state_cpu(model):
@@ -95,7 +111,7 @@ class CrossValidator:
         strat, _ = stratification_key(atype[dev], y[dev], cfg.n_folds)
         splits = list(StratifiedKFold(cfg.n_folds, shuffle=True, random_state=cfg.seed)
                       .split(np.zeros(len(dev)), strat))
-        rows, oof, art, curves = [], {}, {}, []
+        rows, oof, art, curves, tuned = [], {}, {}, [], []
         for phase, mode, setting in self.PHASES:
             for fold, (tp, vp) in enumerate(splits, 1):
                 ftr, fva = dev[tp], dev[vp]
@@ -161,9 +177,27 @@ class CrossValidator:
                 pd.DataFrame(rows).to_csv(os.path.join(cfg.dirs["results"], "cv_results.csv"), index=False)
             models = CENTRAL_MODELS if mode == "central" else self.fl_jobs(setting)
             self.phase_table(R, rows, phase, mode, setting, models)
+            if cfg.threshold_mode == "far":
+                self.tuned_phase(R, rows, oof, y[dev], splits, setting, models, tuned)
         self._folds.clear()                    # free the fold matrices before Stage 3
         self._es.clear()
         return pd.DataFrame(rows), oof, art, curves
+
+    def tuned_phase(self, R, rows, oof, y_dev, splits, setting, models, tuned):
+        """Recall-oriented threshold per fold, cross-fitted: the threshold of fold k is chosen on the OOF scores of the
+        other folds (development rows outside fold k's validation part), then applied to fold k's validation part."""
+        cfg = self.cfg
+        for m in models:
+            s = oof[(setting, m)]
+            for fold, (tp, vp) in enumerate(splits, 1):
+                thr = select_threshold(y_dev[tp], s[tp], cfg.target_far, cfg.decision_threshold)
+                tuned.append({"fold": fold, "setting": setting, "model": m, **binary_metrics(y_dev[vp], s[vp], thr)})
+        T = pd.DataFrame(tuned)
+        T.to_csv(os.path.join(cfg.dirs["results"], "cv_results_tuned.csv"), index=False)
+        C = pd.DataFrame(rows)
+        threshold_table(R, f"Recall-oriented threshold (target FAR <= {cfg.target_far:g}, cross-fitted on the other "
+                           f"folds' OOF scores) vs 0.5 — fold validation, mean over folds",
+                        C[C.setting == setting], T[T.setting == setting], models)
 
     def _payload(self, model, h, info, v, yva):
         """Fold-validation scores (OOF) and CV metrics at the decision threshold (the fold validation part took no part
@@ -309,7 +343,7 @@ class FinalEvaluator:
         jobs = [(s, m) for s in ("all", "fs") for m in CENTRAL_MODELS] + \
                [("all", "fl_kan_ae")] + ([("all", "fl_iid_kan_ae")] if cfg.fl_iid_baseline else []) + \
                [("fs", "fl_kan_ae")] + ([("fs", "fl_kan_ae_cfs")] if cfg.fl_central_fs_ablation else [])
-        rows, preds, scores, states = [], {}, {}, {}
+        rows, rows_t, preds, scores, states, thresholds = [], [], {}, {}, {}, {}
         thr = cfg.decision_threshold
         for s, m in jobs:
             ep = dec["epochs"][(s, m)]
@@ -345,11 +379,27 @@ class FinalEvaluator:
             R.say(f"      TEST (threshold {thr:g}): Accuracy {r['accuracy']:.4f} | F1 {r['f1']:.4f} | "
                   f"Recall {r['recall']:.4f} | Precision {r['precision']:.4f} | FAR {r['far']:.4f} | MCC {r['mcc']:.4f} | "
                   f"AUC {r['roc_auc']:.4f}", "cyan")
+            if cfg.threshold_mode == "far" and (s, m) in oof:      # chosen on development OOF scores only
+                t = select_threshold(yd, oof[(s, m)], cfg.target_far, thr)
+                thresholds[(s, m)] = t
+                rows_t.append({"setting": s, "model": m, "per_attack_dr": json.dumps(per_attack_dr(at, yt, P["st"], t)),
+                               **binary_metrics(yt, P["st"], t)})
+                rt = rows_t[-1]
+                R.say(f"      TEST (threshold {t:.4g}, OOF FAR <= {cfg.target_far:g}): F1 {rt['f1']:.4f} | "
+                      f"Recall {rt['recall']:.4f} | Precision {rt['precision']:.4f} | FAR {rt['far']:.4f} | "
+                      f"MCC {rt['mcc']:.4f}", "cyan")
         TR = pd.DataFrame(rows)
         TR.to_csv(os.path.join(cfg.dirs["results"], "test_results.csv"), index=False)
         R.section(f"INDEPENDENT TEST RESULTS (decision threshold {thr:g})")
         metric_table(R, [r for s in ("all", "fs") for m in ORDER
                          for r in TR[(TR.setting == s) & (TR.model == m)].to_dict("records")])
+        if rows_t:
+            TT = pd.DataFrame(rows_t)
+            TT.to_csv(os.path.join(cfg.dirs["results"], "test_results_tuned.csv"), index=False)
+            for st_ in ("all", "fs"):
+                threshold_table(R, f"INDEPENDENT TEST [{st_}]: recall-oriented threshold (OOF FAR <= {cfg.target_far:g}) "
+                                   f"vs 0.5", TR[TR.setting == st_], TT[TT.setting == st_], ORDER)
+                self._per_attack_table(TR[TR.setting == st_], TT[TT.setting == st_], st_)
         self._mcnemar(TR, preds, yt)
         self._decomposition(TR)
         arr = {"y_dev": yd.astype(np.int8), "atype_dev": np.asarray(atype[dev], str), "y_test": yt.astype(np.int8),
@@ -358,7 +408,20 @@ class FinalEvaluator:
         arr.update({f"test__{s}__{m}": v.astype(np.float32) for (s, m), v in scores.items()})
         np.savez_compressed(os.path.join(cfg.dirs["results"], "scores.npz"), **arr)
         return {"prep": prep, "names": names, "sel": sel, "cols": cols, "scalers": scalers, "Xd": Xd, "Xt": Xt,
-                "states": states, "TR": TR, "oof": oof}
+                "states": states, "TR": TR, "oof": oof, "thresholds": thresholds}
+
+    def _per_attack_table(self, TR, TT, setting):
+        """Detection rate per attack type on the test set, 0.5 -> recall-oriented threshold, one column per model."""
+        ms = [m for m in ORDER if m in set(TT.model)]
+        if not ms:
+            return
+        b = {m: json.loads(TR[TR.model == m].per_attack_dr.iloc[0]) for m in ms}
+        t = {m: json.loads(TT[TT.model == m].per_attack_dr.iloc[0]) for m in ms}
+        types = sorted(b[ms[0]], key=lambda k: b[ms[0]][k])          # most-missed type first
+        self.R.section(f"Detection rate per attack type [{setting}] (test set): threshold 0.5 -> recall-oriented")
+        self.R.table(["Attack type"] + [MODEL_NAMES[m] for m in ms],
+                     [(k,) + tuple(f"{b[m][k]:.4f} -> {t[m][k]:.4f}" for m in ms) for k in types],
+                     widths=[24] + [22] * len(ms))
 
     def _mcnemar(self, TR, preds, yt):
         Y = TR.set_index(["setting", "model"])

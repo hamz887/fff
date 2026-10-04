@@ -13,6 +13,8 @@ from dataclasses import asdict
 
 import joblib
 
+from .config import POST_HOC_SETTINGS
+
 try:                                                   # optional: coloured console and progress bars
     from rich.console import Console
     from rich.markup import escape
@@ -236,7 +238,8 @@ class Cache:
 
     def __init__(self, cfg, resume):
         self.dir = cfg.dirs["cache"]
-        snap = json.loads(json.dumps({k: v for k, v in asdict(cfg).items() if k != "out_dir"}, default=str))
+        snap = json.loads(json.dumps({k: v for k, v in asdict(cfg).items()
+                                      if k != "out_dir" and k not in POST_HOC_SETTINGS}, default=str))
         snap["_cache_format"] = self.FORMAT
         path = os.path.join(self.dir, "config_snapshot.json")
         if resume and os.path.isfile(path):
