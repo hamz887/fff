@@ -2,7 +2,8 @@
 """
 evaluate.py — performance metrics, statistical tests and the edge (deployment) profile.
 
-Every model uses the standard decision rule: attack if the sigmoid score >= 0.5 (config.decision_threshold).
+Every model uses the standard decision rule: attack if the sigmoid score >= 0.5 (config.decision_threshold); with
+threshold_mode "far" a recall-oriented threshold (select_threshold) is reported as well.
 Metrics: accuracy, precision, recall (= detection rate), F1, FPR (= FAR), specificity, balanced accuracy, MCC,
 Cohen's kappa, G-mean, ROC-AUC, PR-AUC (threshold-independent) and the confusion matrix (tp, tn, fp, fn).
 """
@@ -39,6 +40,22 @@ def binary_metrics(y, s, thr=0.5):
             "far": fp / max(fp + tn, 1), "fpr": fp / max(fp + tn, 1), "specificity": tnr, "detection_rate": tpr,
             "mcc": matthews_corrcoef(y, p), "kappa": cohen_kappa_score(y, p), "g_mean": float(np.sqrt(tpr * tnr)),
             "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn)}
+
+
+def select_threshold(y, s, target_far, cap=0.5):
+    """Recall-oriented decision threshold: the lowest threshold whose false-alarm rate on (y, s) is <= target_far, i.e.
+    the highest detection rate the false-alarm budget allows, capped at `cap` (it may only lower the standard 0.5).
+    (y, s) must not be the data the threshold is evaluated on (out-of-fold development scores). Only the per-class
+    score distribution is needed, so in a federated deployment it follows from score histograms summed over clients."""
+    y, s = np.asarray(y), np.asarray(s, dtype=np.float64)
+    ok = ~np.isnan(s)
+    neg = np.sort(s[ok & (y == 0)])[::-1]                      # Normal scores, highest first
+    if not len(neg):
+        return float(cap)
+    k = int(np.floor(target_far * len(neg) + 1e-9))            # false alarms the budget allows
+    if k >= len(neg):
+        return float(min(cap, neg[-1]))
+    return float(min(cap, np.nextafter(neg[k], np.inf)))       # just above the (k+1)-th highest Normal score
 
 
 def per_attack_dr(atype, y, s, thr):

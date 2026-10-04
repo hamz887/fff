@@ -48,7 +48,10 @@ class IDSBundle:
                 else ("Boruta+XGBoost (centralized)" if setting == "fs" else "all encoded features"),
                 "leakage_columns_removed": cfg.leakage_cols,
                 "n_features": len(sel), "features": sel, "raw_fields_needed": prep.raw_fields(), "threshold": thr,
-                "threshold_policy": f"standard decision rule: attack if score >= {thr:g}",
+                "threshold_policy": f"standard decision rule: attack if score >= {thr:g}"
+                if thr == cfg.decision_threshold else
+                f"recall-oriented rule: attack if score >= {thr:.4g} (lowest threshold with false-alarm rate <= "
+                f"{cfg.target_far:g} on out-of-fold development scores)",
                 "test_metrics": {k: test_row[k] for k in ("accuracy", "precision", "recall", "f1", "mcc", "roc_auc", "far")},
                 "attack_types": classes, "attack_type_metrics": mc_summ, "edge_profile": edge}
         write_json(card, os.path.join(md, "model_card.json"))
