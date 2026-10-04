@@ -1,0 +1,86 @@
+{
+  "rows_raw": 2219201,
+  "cols_raw": 63,
+  "leakage_columns_removed": {
+    "frame.time": "capture timestamp: attack families were recorded in separate, non-overlapping time windows",
+    "ip.src_host": "source IP: host identity (attacker host 192.168.0.170 is 100% attack)",
+    "ip.dst_host": "destination IP: host identity (192.168.0.170 as destination is 100% attack)",
+    "tcp.options": "TCP options: fingerprint of the attacker host's TCP stack (timestamp option in attack traffic, absent in normal IoT devices), a testbed artefact",
+    "tcp.srcport": "TCP source port: per-connection port (session identity)",
+    "tcp.dstport": "TCP destination port: port on reply packets (session identity)"
+  },
+  "excluded_columns": {},
+  "leakage_columns_absent": [],
+  "placeholders_unified": {
+    "arp.dst.proto_ipv4": 1214,
+    "arp.src.proto_ipv4": 122782,
+    "http.file_data": 2053112,
+    "http.request.uri.query": 2117888,
+    "http.request.method": 1964275,
+    "http.referer": 2103265,
+    "http.request.full_uri": 1964275,
+    "http.request.version": 1963061,
+    "tcp.payload": 262390,
+    "dns.qry.name.len": 603331,
+    "mqtt.conack.flags": 686575,
+    "mqtt.msg": 603558,
+    "mqtt.protoname": 603558,
+    "mqtt.topic": 603558
+  },
+  "non_numeric_set_to_0": {
+    "arp.dst.proto_ipv4": 17387,
+    "arp.src.proto_ipv4": 5854,
+    "http.request.uri.query": 14080,
+    "http.referer": 570,
+    "dns.qry.name.len": 1845
+  },
+  "missing_filled": 0,
+  "duplicates_removed": 314486,
+  "conflicting_removed": 37902,
+  "conflicting_by_type": {
+    "Normal": 18951,
+    "DDoS_HTTP": 7344,
+    "Uploading": 5207,
+    "SQL_injection": 2678,
+    "Password": 2152,
+    "XSS": 517,
+    "Backdoor": 395,
+    "Ransomware": 377,
+    "Vulnerability_scanner": 234,
+    "Fingerprinting": 46,
+    "MITM": 1
+  },
+  "rows_clean": 1866813,
+  "numeric": 47,
+  "text": [
+    "http.file_data",
+    "http.request.method",
+    "http.request.full_uri",
+    "http.request.version",
+    "tcp.payload",
+    "mqtt.msg",
+    "mqtt.protoname",
+    "mqtt.topic"
+  ],
+  "class_counts": {
+    "0": 1345047,
+    "1": 521766
+  },
+  "attack_type_counts": {
+    "Backdoor": 23332,
+    "DDoS_HTTP": 39173,
+    "DDoS_ICMP": 67935,
+    "DDoS_TCP": 50061,
+    "DDoS_UDP": 121567,
+    "Fingerprinting": 749,
+    "MITM": 393,
+    "Normal": 1345047,
+    "Password": 46372,
+    "Port_Scanning": 19974,
+    "Ransomware": 9242,
+    "SQL_injection": 47650,
+    "Uploading": 31599,
+    "Vulnerability_scanner": 49635,
+    "XSS": 14084
+  }
+}
